@@ -1,0 +1,264 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>实时量化选股系统 - 个人版</title>
+    <style>
+        :root { --up-color: #e74c3c; --down-color: #2ecc71; --bg-color: #f8f9fa; }
+        body { font-family: 'Segoe UI', Arial, sans-serif; margin: 0; padding: 20px; background: var(--bg-color); color: #333; }
+        .container { max-width: 1200px; margin: 0 auto; background: white; padding: 25px; border-radius: 12px; box-shadow: 0 4px 20px rgba(0,0,0,0.08); }
+        
+        /* 头部与状态栏 */
+        .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 25px; border-bottom: 2px solid #eee; padding-bottom: 15px; }
+        .status-bar { font-size: 14px; color: #666; }
+        .live-dot { display: inline-block; width: 10px; height: 10px; background: #2ecc71; border-radius: 50%; margin-right: 5px; animation: pulse 1.5s infinite; }
+        @keyframes pulse { 0% { opacity: 1; } 50% { opacity: 0.4; } 100% { opacity: 1; } }
+
+        /* 按钮样式 */
+        .btn { padding: 10px 25px; border: none; border-radius: 6px; cursor: pointer; font-size: 15px; transition: all 0.3s; margin-right: 10px; }
+        .btn-primary { background: #3498db; color: white; }
+        .btn-primary:hover { background: #2980b9; }
+        .btn-success { background: #27ae60; color: white; }
+        .btn-warning { background: #f39c12; color: white; }
+
+        /* 股票卡片网格 */
+        .stock-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(350px, 1fr)); gap: 15px; margin: 20px 0; }
+        .stock-card { border: 1px solid #e0e0e0; border-radius: 8px; padding: 15px; position: relative; overflow: hidden; transition: transform 0.2s; }
+        .stock-card:hover { transform: translateY(-3px); box-shadow: 0 5px 15px rgba(0,0,0,0.1); }
+        .stock-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
+        .stock-name { font-size: 18px; font-weight: bold; }
+        .stock-code { font-size: 12px; color: #888; background: #f0f0f0; padding: 2px 6px; border-radius: 4px; }
+        .price-info { font-size: 24px; font-weight: bold; margin: 10px 0; }
+        .tag { display: inline-block; font-size: 11px; padding: 3px 8px; border-radius: 10px; margin-right: 5px; margin-bottom: 5px; color: white; }
+        .tag-ma { background: #9b59b6; } .tag-mom { background: #e67e22; } .tag-boll { background: #1abc9c; }
+        
+        /* 颜色工具类 */
+        .text-up { color: var(--up-color); } .text-down { color: var(--down-color); }
+
+        /* 筛选区域 */
+        .filter-box { background: #f1f8ff; padding: 20px; border-radius: 8px; margin-top: 30px; border-left: 4px solid #3498db; }
+        textarea { width: 100%; height: 80px; padding: 12px; border: 1px solid #ddd; border-radius: 6px; resize: vertical; font-family: inherit; box-sizing: border-box; }
+        
+        /* 加载动画 */
+        .loading { text-align: center; padding: 40px; color: #888; display: none; }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <div class="header">
+        <div>
+            <h1 style="margin:0; font-size:24px;">📊 个人量化实时监控</h1>
+            <p style="margin:5px 0 0; color:#666; font-size:13px;">策略：双均线 | 动量突破 | 趋势线 | 多头能量 | 新布林极限</p>
+        </div>
+        <div class="status-bar">
+            <span id="marketStatus"><span class="live-dot"></span>数据源: 新浪财经实时接口</span>
+            <div style="margin-top:5px; font-size:12px;" id="lastUpdate">等待更新...</div>
+        </div>
+    </div>
+
+    <div style="margin-bottom: 20px;">
+        <button class="btn btn-primary" onclick="refreshAllData()">🔄 立即刷新行情</button>
+        <button class="btn btn-success" onclick="toggleAutoRefresh()" id="autoBtn">⏸️ 暂停自动刷新</button>
+        <span style="font-size:12px; color:#999; margin-left:10px;">* 交易时段每5秒自动更新，非交易时段显示收盘价</span>
+    </div>
+
+    <div id="loading" class="loading">正在从交易所获取最新数据...</div>
+    <div id="stockContainer" class="stock-grid"></div>
+
+    <div class="filter-box">
+        <h3 style="margin-top:0;">🔍 人工二次筛选 / 逻辑修正</h3>
+        <textarea id="customFilter" placeholder="输入自然语言指令，例如：&#10;- 排除今日跌幅超过3%的股票&#10;- 只保留换手率大于5%的标的&#10;- 重点关注MACD金叉且量能放大的个股"></textarea>
+        <button class="btn btn-warning" onclick="applyManualFilter()" style="margin-top:10px;">应用筛选条件</button>
+    </div>
+</div>
+
+<script>
+    // === 配置区：您可以随时在这里修改监控股票 ===
+    const WATCH_LIST = [
+        { code: 'sh600519', name: '贵州茅台', tags: ['双均线金叉', '消费龙头'], logic: '5日线上穿20日线，主力资金净流入' },
+        { code: 'sz000858', name: '五粮液', tags: ['趋势线突破', '多头能量'], logic: '突破长期下降趋势线，RSI进入强势区' },
+        { code: 'sh601318', name: '中国平安', tags: ['动量策略', '估值修复'], logic: '20日动量因子排名前10%，PB低于历史均值' },
+        { code: 'sz002475', name: '立讯精密', tags: ['新布林极限', '科技'], logic: '触及布林下轨后反弹，KDJ低位金叉' },
+        { code: 'sh600036', name: '招商银行', tags: ['双均线', '高股息'], logic: '均线多头排列，股息率>4%，资金持续流入' }
+    ];
+
+    let autoRefreshTimer = null;
+    let isAutoRefreshing = true;
+
+    // 初始化
+    window.onload = () => {
+        refreshAllData();
+        startAutoRefresh();
+    };
+
+    // 核心：通过新浪JSONP接口获取实时数据（无需服务器）
+    async function fetchRealTimeQuotes() {
+        const codes = WATCH_LIST.map(s => s.code).join(',');
+        const scriptId = 'sina_jsonp_' + Date.now();
+        
+        return new Promise((resolve, reject) => {
+            const script = document.createElement('script');
+            script.id = scriptId;
+            // 新浪接口返回格式: var hq_str_sh600519="贵州茅台,1800.00,...";
+            script.src = `https://hq.sinajs.cn/list=${codes}&rn=${Date.now()}`;
+            
+            script.onload = () => {
+                const results = [];
+                WATCH_LIST.forEach(stock => {
+                    try {
+                        const varName = `hq_str_${stock.code}`;
+                        const rawData = window[varName]; 
+                        if (rawData && rawData.length > 0) {
+                            const parts = rawData.split(',');
+                            // 新浪数据索引: 3=当前价, 4=昨收, 5=今开, 8=成交量, 9=成交额
+                            const current = parseFloat(parts[3]);
+                            const preClose = parseFloat(parts[2]);
+                            const changePercent = ((current - preClose) / preClose * 100).toFixed(2);
+                            
+                            results.push({
+                                ...stock,
+                                price: current.toFixed(2),
+                                change: changePercent,
+                                volume: (parseFloat(parts[8]) / 10000).toFixed(0) + '万手',
+                                amount: (parseFloat(parts[9]) / 100000000).toFixed(2) + '亿',
+                                time: parts[31] || '--:--'
+                            });
+                        }
+                    } catch(e) { console.error('解析失败:', stock.code, e); }
+                });
+                
+                // 清理临时脚本
+                document.head.removeChild(script);
+                delete window[scriptId];
+                resolve(results);
+            };
+            
+            script.onerror = () => {
+                document.head.removeChild(script);
+                reject(new Error('网络请求失败，请检查网络连接'));
+            };
+            
+            document.head.appendChild(script);
+        });
+    }
+
+    // 渲染股票卡片
+    function renderCards(dataList) {
+        const container = document.getElementById('stockContainer');
+        if (!dataList || dataList.length === 0) {
+            container.innerHTML = '<div style="grid-column:1/-1; text-align:center; padding:40px; color:#999;">暂无数据，请检查股票代码或网络连接</div>';
+            return;
+        }
+
+        container.innerHTML = dataList.map(item => {
+            const colorClass = item.change >= 0 ? 'text-up' : 'text-down';
+            const sign = item.change >= 0 ? '+' : '';
+            const tagHtml = item.tags.map(t => {
+                let cls = 'tag-ma';
+                if(t.includes('动量')) cls = 'tag-mom';
+                if(t.includes('布林')) cls = 'tag-boll';
+                return `<span class="tag ${cls}">${t}</span>`;
+            }).join('');
+
+            return `
+                <div class="stock-card">
+                    <div class="stock-header">
+                        <span class="stock-name">${item.name}</span>
+                        <span class="stock-code">${item.code.toUpperCase()}</span>
+                    </div>
+                    <div class="price-info ${colorClass}">
+                        ¥${item.price} <span style="font-size:16px;">(${sign}${item.change}%)</span>
+                    </div>
+                    <div style="font-size:12px; color:#666; margin-bottom:8px;">
+                        成交: ${item.amount} | 量: ${item.volume} | 更新: ${item.time}
+                    </div>
+                    <div style="margin-bottom:8px;">${tagHtml}</div>
+                    <div style="font-size:12px; color:#555; background:#fafafa; padding:8px; border-radius:4px; line-height:1.5;">
+                        💡 <strong>入选逻辑:</strong> ${item.logic}
+                    </div>
+                </div>
+            `;
+        }).join('');
+
+        document.getElementById('lastUpdate').innerText = `最后更新: ${new Date().toLocaleTimeString()} (每5秒刷新)`;
+    }
+
+    // 刷新主控函数
+    async function refreshAllData() {
+        const loading = document.getElementById('loading');
+        const container = document.getElementById('stockContainer');
+        
+        // 仅在首次或手动点击时显示loading
+        if(container.children.length === 0) loading.style.display = 'block';
+        
+        try {
+            const data = await fetchRealTimeQuotes();
+            renderCards(data);
+        } catch (err) {
+            console.error(err);
+            // 如果接口被浏览器拦截（CORS），降级显示提示
+            if(container.children.length === 0) {
+                container.innerHTML = `<div style="grid-column:1/-1; padding:30px; text-align:center; color:#e74c3c;">
+                    ⚠️ 实时数据获取受限<br><br>
+                    <small>由于浏览器安全策略，本地HTML直接调用新浪接口可能被拦截。<br>
+                    建议安装 "Allow CORS" 浏览器插件，或将此文件部署到任意静态托管服务。</small>
+                </div>`;
+            }
+        } finally {
+            loading.style.display = 'none';
+        }
+    }
+
+    // 自动刷新控制
+    function startAutoRefresh() {
+        if (autoRefreshTimer) clearInterval(autoRefreshTimer);
+        autoRefreshTimer = setInterval(refreshAllData, 5000);
+        isAutoRefreshing = true;
+        document.getElementById('autoBtn').innerText = '⏸️ 暂停自动刷新';
+        document.getElementById('autoBtn').className = 'btn btn-success';
+    }
+
+    function toggleAutoRefresh() {
+        if (isAutoRefreshing) {
+            clearInterval(autoRefreshTimer);
+            isAutoRefreshing = false;
+            document.getElementById('autoBtn').innerText = '▶️ 开启自动刷新';
+            document.getElementById('autoBtn').className = 'btn btn-warning';
+        } else {
+            startAutoRefresh();
+        }
+    }
+
+    // 人工筛选模拟
+    function applyManualFilter() {
+        const input = document.getElementById('customFilter').value.trim();
+        if (!input) return alert('请输入筛选条件');
+        
+        // 在实际无后端环境中，这里可以做简单的关键词过滤
+        // 复杂语义分析需要接入大模型API
+        const cards = document.querySelectorAll('.stock-card');
+        let filteredCount = 0;
+        
+        cards.forEach(card => {
+            const text = card.innerText.toLowerCase();
+            const keywords = input.toLowerCase().split(/[，,、\s]+/).filter(k => k.length > 0);
+            const shouldHide = keywords.some(k => k.includes('排除') && text.includes(k.replace('排除','')));
+            
+            if (shouldHide) {
+                card.style.opacity = '0.3';
+                card.style.filter = 'grayscale(1)';
+                filteredCount++;
+            } else {
+                card.style.opacity = '1';
+                card.style.filter = 'none';
+            }
+        });
+        
+        alert(`✅ 筛选已应用！\n已弱化 ${filteredCount} 只不符合条件的股票。\n\n注：复杂量化筛选建议配合AKShare+Python使用，本页面仅做可视化展示。`);
+    }
+</script>
+
+</body>
+</html>
